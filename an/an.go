@@ -1,26 +1,18 @@
 package an
 
-func calculateEMA(prices []float64, period int) []float64 {
-	if period <= 0 || len(prices) < period {
-		return nil
+func calculateEMA(prices []float64, period int, skip int) []float64 {
+	result := make([]float64, len(prices))
+	for i := 0; i < len(prices); i++ {
+		if i > skip {
+			sum := 0.0
+			for j := i - period; j < i; j++ {
+				sum += prices[j]
+			}
+			v := sum / float64(period)
+			result[i] = v
+		}
 	}
-
-	multiplier := 2.0 / float64(period+1)
-	ema := make([]float64, len(prices))
-
-	// Начальное значение EMA — это простая скользящая средняя первых period значений
-	sum := 0.0
-	for i := 0; i < period; i++ {
-		sum += prices[i]
-	}
-	ema[period-1] = sum / float64(period)
-
-	// Вычисляем оставшиеся значения EMA
-	for i := period; i < len(prices); i++ {
-		ema[i] = (prices[i]-ema[i-1])*multiplier + ema[i-1]
-	}
-
-	return ema
+	return result
 }
 
 // calculateMACD рассчитывает MACD и сигнальную линию
@@ -30,8 +22,8 @@ func CalculateMACD(prices []float64, shortPeriod, longPeriod, signalPeriod int) 
 	}
 
 	// Рассчитываем короткую и длинную EMA
-	shortEMA := calculateEMA(prices, shortPeriod)
-	longEMA := calculateEMA(prices, longPeriod)
+	shortEMA := calculateEMA(prices, shortPeriod, longPeriod)
+	longEMA := calculateEMA(prices, longPeriod, longPeriod)
 
 	if shortEMA == nil || longEMA == nil {
 		return nil, nil
@@ -44,7 +36,7 @@ func CalculateMACD(prices []float64, shortPeriod, longPeriod, signalPeriod int) 
 	}
 
 	// Рассчитываем сигнальную линию (EMA от MACD)
-	signalLine := calculateEMA(macd[longPeriod-1:], signalPeriod)
+	signalLine := calculateEMA(macd[longPeriod-1:], signalPeriod, longPeriod*2)
 
 	return macd, signalLine
 }
