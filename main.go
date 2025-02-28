@@ -206,7 +206,7 @@ func Emulate(short int, long int, stopLoss float64, takeProfit float64, p0 float
 			// если коэффициент наклона прямой положительный - тренд вверх
 			// если отрицательный - тренд вниз
 			trendUp = false
-			pointsCount := len(prices) / 5
+			pointsCount := len(prices) / 10
 			if i > pointsCount {
 				x := make([]float64, pointsCount)
 				y := make([]float64, pointsCount)
@@ -281,9 +281,9 @@ func Emulate(short int, long int, stopLoss float64, takeProfit float64, p0 float
 					}
 				}
 
-				if !trendUp {
+				/*if !trendUp {
 					needOpen = false
-				}
+				}*/
 
 				if needOpen {
 					//if s1[i] > s1[i-1] && s1[i-1] > s1[i-2] && s1[i-2] > s1[i-3] && s1[i] < 0 {
@@ -376,11 +376,18 @@ func Emulate(short int, long int, stopLoss float64, takeProfit float64, p0 float
 		ch4 := chart.NewChart()
 		{
 			data := make([]float64, len(prices))
+			r := len(prices) / 10
 			for i := 0; i < len(prices); i++ {
 				data[i] = prices[i]
+				if i > r {
+					for j := i - r; j < i; j++ {
+						data[i] += prices[j]
+					}
+					data[i] /= float64(r)
+				}
 			}
 
-			savitzkyGolay5(data)
+			//savitzkyGolay5(data)
 
 			ch4.SetData(data)
 		}
@@ -397,7 +404,7 @@ func Emulate(short int, long int, stopLoss float64, takeProfit float64, p0 float
 }
 
 func main() {
-	Emulate(8, 16, -2, 2, 0)
+	Emulate(12, 26, -0.5, 2, 0)
 	/*for stopLoss := 0.5; stopLoss < 1.0; stopLoss += 0.1 {
 		logger.Println("stopLoss:", stopLoss)
 		for takeProfit := 0.2; takeProfit < 5.0; takeProfit += 0.1 {
