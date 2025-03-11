@@ -3,7 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"image/png"
+	"math"
 	"os"
 	"sort"
 	"strconv"
@@ -11,14 +11,13 @@ import (
 
 	"github.com/ipoluianov/diode/an"
 	"github.com/ipoluianov/diode/bybit"
-	"github.com/ipoluianov/diode/chart"
 	"github.com/ipoluianov/gomisc/logger"
 )
 
 func FetchData() {
 	dtBegin := time.Now().Add(-12 * time.Hour)
 	dtEnd := time.Now()
-	candles := bybit.GetCandles("DEEPUSDT", dtBegin, dtEnd, "1")
+	candles := bybit.GetCandles("BTCUSDT", dtBegin, dtEnd, "1")
 	candlesBS, _ := json.MarshalIndent(candles, "", "  ")
 	os.WriteFile("candles.json", candlesBS, 0644)
 }
@@ -49,62 +48,6 @@ func Analize() {
 	os.WriteFile("s2.json", s2BS, 0644)
 }
 
-func CalculateLeastSquares(x []float64, y []float64) (float64, float64) {
-	count := len(x)
-	sumx := 0.0
-	sumy := 0.0
-	sumx2 := 0.0
-	sumxy := 0.0
-
-	for i := 0; i < count; i++ {
-		sumx += x[i]
-		sumy += y[i]
-		sumx2 += x[i] * x[i]
-		sumxy += x[i] * y[i]
-	}
-
-	a := 0.0
-	b := 0.0
-	if count > 2 {
-		a = (float64(count)*sumxy - (sumx * sumy)) / (float64(count)*sumx2 - sumx*sumx)
-		b = (sumy - a*sumx) / float64(count)
-	}
-
-	return a, b
-
-	/*
-		void LinearOLS::fill()
-		    {
-
-		        unsigned count = x_.size();
-		        double sumx = 0;
-		        double sumy = 0;
-		        double sumx2 = 0;
-		        double sumxy = 0;
-
-		        for (unsigned i = 0; i < count; i++)
-		        {
-		            sumx += x_[i];
-		            sumy += y_[i];
-		            sumx2 += x_[i] * x_[i];
-		            sumxy += x_[i] * y_[i];
-		        }
-
-		        a_ = 0;
-		        b_ = 0;
-		        valid_ = false;
-		        if (count > 2)
-		        {
-		            a_ = (count * sumxy - (sumx * sumy)) / (count * sumx2 - sumx * sumx);
-		            b_ = (sumy - a_ * sumx) / count;
-		            valid_ = true;
-		            filled_ = true;
-		        }
-		    }
-
-	*/
-}
-
 func savitzkyGolay5(data []float64) {
 	size := len(data)
 	if size < 5 {
@@ -128,7 +71,36 @@ func savitzkyGolay5(data []float64) {
 	}
 }
 
-func Emulate(short int, long int, stopLoss float64, takeProfit float64, p0 float64) float64 {
+func CalculateRSI(prices []float64) float64 {
+	upWards := 0.0
+	downWards := 0.0
+
+	lastPrice := prices[0]
+	for i := 1; i < len(prices); i++ {
+		diff := prices[i] - lastPrice
+		if diff > 0 {
+			upWards += diff
+		} else {
+			downWards += math.Abs(diff)
+		}
+	}
+
+	rs := upWards / downWards
+	rsi := 100 - 100/(1+rs)
+
+	return rsi
+}
+
+func CalculateEMAPoint(prices []float64, period int) float64 {
+	ema := 0.0
+	for i := 0; i < period; i++ {
+		ema += prices[i]
+	}
+	ema /= float64(period)
+	return ema
+}
+
+func Emulate(short int, long int, stopLoss float64, takeProfit float64, p0 int) float64 {
 	// logger.Println("Emulate begin")
 	initialBalanceUSDT := 1000.0
 	balanceUSDT := 1000.0
@@ -146,32 +118,20 @@ func Emulate(short int, long int, stopLoss float64, takeProfit float64, p0 float
 
 	prices := make([]float64, len(candles))
 	for i, c := range candles {
-		//openPrice, _ := strconv.ParseFloat(c.OpenPrice, 64)
+		openPrice, _ := strconv.ParseFloat(c.OpenPrice, 64)
 		closePrice, _ := strconv.ParseFloat(c.ClosePrice, 64)
-		//avgPrice := (openPrice + closePrice) / 2
-		prices[i] = closePrice
+		avgPrice := (openPrice + closePrice) / 2
+		prices[i] = avgPrice
 	}
-
-	s1, _ := an.CalculateMACD(prices, short, long, 9)
-
-	s1Mid := 0.0
-	for _, v := range s1 {
-		if v < 0 {
-			s1Mid += v
-		}
-	}
-	s1Mid /= float64(len(s1))
 
 	posIsActive := false
-	posBuyPrice := 0.0
+	//posBuyPrice := 0.0
 	posOpenUSDT := 0.0
 	posOpenIndex := 0
 
 	countOfOperations := 0
 
 	lastUSDTBalance := balanceUSDT
-
-	waitingForNegative := false
 
 	type Transaction struct {
 		OpenIndex  int
@@ -180,61 +140,59 @@ func Emulate(short int, long int, stopLoss float64, takeProfit float64, p0 float
 	}
 
 	trs := make([]Transaction, 0)
-	trends := make([]float64, len(candles))
 
-	trendUp := false
+	//rsiWindow := 60
 
-	for i := 10; i < len(candles)-10; i++ {
+	rsiData := make([]float64, len(prices))
+	for i := 0; i < len(prices); i++ {
+		rsiData[i] = 50
+	}
 
-		if trendUp {
-			trends[i] = 1
-		} else {
-			trends[i] = 0
-		}
+	emaSlowData := make([]float64, len(prices))
+	emaFastData := make([]float64, len(prices))
 
+	skipFirstPoints := 120
+
+	for i := skipFirstPoints; i < len(prices); i++ {
 		candle := candles[i]
 		line := ""
 		line += candle.StartTime.Format("2006-01-02 15:04:05")
 		line += "\t"
 		line += fmt.Sprint(prices[i])
 		line += "\t"
-		line += fmt.Sprint(s1[i])
+
+		rsi := CalculateRSI(prices[i-p0 : i])
+		rsiData[i] = rsi
+
+		// replace last 5 points with EMA
+		//rsiEmaRange := 5
+		//rsi = CalculateEMAPoint(rsiData[i-rsiEmaRange+1:i+1], rsiEmaRange)
+		//rsiData[i] = rsi
+
+		//short = 12
+		//long = 50
+
+		emaSlow := CalculateEMAPoint(prices[i-long:i], long)
+		emaSlowData[i] = emaSlow
+
+		emaFast := CalculateEMAPoint(prices[i-short:i], short)
+		emaFastData[i] = emaFast
+
+		trendUp := (emaFast - emaSlow) > (emaSlow * 0.000)
+
+		line += "RSI:" + fmt.Sprint(math.Round(rsi))
 		line += "\t"
 
-		{
-			// отпределяем тренд по последним 100 точкам алгоритмом наименьших квадратов
-			// если коэффициент наклона прямой положительный - тренд вверх
-			// если отрицательный - тренд вниз
-			trendUp = false
-			pointsCount := len(prices) / 10
-			if i > pointsCount {
-				x := make([]float64, pointsCount)
-				y := make([]float64, pointsCount)
-				for j := 0; j < pointsCount; j++ {
-					x[j] = float64(j)
-					y[j] = prices[i-j]
-				}
-				k, m := CalculateLeastSquares(x, y)
-				_ = k
-				_ = m
-				if k < 0 {
-					trendUp = true
-				} else {
-					trendUp = false
-				}
-			}
-		}
-
 		if posIsActive {
-			currentS1LessThenPreviousS1 := s1[i] < s1[i-1]
+			//currentS1LessThenPreviousS1 := s1[i] < s1[i-1]
 			profitIndicator := 0.0
 			{
 				posSellPrice := prices[i]
-				closeUSDT := balanceDEEP*posSellPrice - (posOpenUSDT * 0.002)
+				closeUSDT := balanceDEEP*posSellPrice - (posOpenUSDT * 0.001)
 				profitIndicator = (closeUSDT - posOpenUSDT) / posOpenUSDT * 100.0
 			}
 
-			needClose := profitIndicator < stopLoss || profitIndicator > takeProfit || currentS1LessThenPreviousS1
+			needClose := profitIndicator < stopLoss || profitIndicator > takeProfit || rsi > 70
 
 			if i-posOpenIndex < 5 {
 				needClose = false
@@ -252,13 +210,12 @@ func Emulate(short int, long int, stopLoss float64, takeProfit float64, p0 float
 				usdtDiff := balanceUSDT - posOpenUSDT
 				profitInProcents := usdtDiff / posOpenUSDT * 100
 				countOfOperations++
-				logger.Println(posSellPrice, "-", posBuyPrice, "=", profitInProcents, "%")
+				//logger.Println(posSellPrice, "-", posBuyPrice, "=", profitInProcents, "%")
 				line += "CLOSED"
 				line += "\t"
 				line += fmt.Sprint(profitInProcents)
 				line += "%"
 				line += "\t"
-				waitingForNegative = true
 
 				tr := Transaction{
 					OpenIndex:  posOpenIndex,
@@ -271,40 +228,22 @@ func Emulate(short int, long int, stopLoss float64, takeProfit float64, p0 float
 				trs = append(trs, tr)
 			}
 		} else {
-			// decision to open position - if last 2 values of s1 are positive
-			if !waitingForNegative {
-				needOpen := false
+			needOpen := false
 
-				if s1[i] < s1Mid+s1Mid*1 {
-					if s1[i] > s1[i-1] {
-						needOpen = true
-					}
-				}
-
-				/*if !trendUp {
-					needOpen = false
-				}*/
-
-				if needOpen {
-					//if s1[i] > s1[i-1] && s1[i-1] > s1[i-2] && s1[i-2] > s1[i-3] && s1[i] < 0 {
-					//logger.Println("Buy at ", prices[i])
-					// Buy
-					balanceDEEP += balanceUSDT / prices[i]
-					posOpenUSDT = balanceUSDT
-					balanceUSDT = 0
-					posIsActive = true
-					posBuyPrice = prices[i]
-					posOpenIndex = i
-
-					line += "OPENED"
-					line += "\t"
-				}
+			if rsi < 30 && trendUp {
+				needOpen = true
 			}
-		}
 
-		if waitingForNegative {
-			if s1[i] < 0 {
-				waitingForNegative = false
+			if needOpen {
+				balanceDEEP += balanceUSDT / prices[i]
+				posOpenUSDT = balanceUSDT
+				balanceUSDT = 0
+				posIsActive = true
+				//posBuyPrice = prices[i]
+				posOpenIndex = i
+
+				line += "OPENED"
+				line += "\t"
 			}
 		}
 
@@ -312,9 +251,15 @@ func Emulate(short int, long int, stopLoss float64, takeProfit float64, p0 float
 		result += line
 	}
 
+	// Fill EMAs first points with first value
+	for i := 0; i < skipFirstPoints; i++ {
+		emaSlowData[i] = emaSlowData[skipFirstPoints]
+		emaFastData[i] = emaFastData[skipFirstPoints]
+	}
+
 	totalProfitInProcents := (lastUSDTBalance - initialBalanceUSDT) / initialBalanceUSDT * 100
 
-	logger.Println("balanceUSDT:", lastUSDTBalance)
+	/*logger.Println("balanceUSDT:", lastUSDTBalance)
 	logger.Println("totalProfitInProcents:", totalProfitInProcents, "%")
 	logger.Println("countOfOperations:", countOfOperations)
 	logger.Println("Commisions:", float64(countOfOperations)*(lastUSDTBalance*0.001), "USDT")
@@ -324,72 +269,95 @@ func Emulate(short int, long int, stopLoss float64, takeProfit float64, p0 float
 	os.WriteFile("result.txt", []byte(result), 0644)
 
 	{
+		// CHART 1
 		ch1 := chart.NewChart()
-		ch1.SetText(fmt.Sprint(totalProfitInProcents))
-		ch1.SetData(prices)
-
 		{
-			lines := make([]int, 0)
-			for _, tr := range trs {
-				lines = append(lines, tr.OpenIndex)
-			}
-			ch1.SetLines1(lines)
+			ch1.SetText(fmt.Sprint(totalProfitInProcents))
+			ch1.SetData(prices)
 
-			lines = make([]int, 0)
-			for _, tr := range trs {
-				lines = append(lines, tr.CloseIndex)
-			}
-			ch1.SetLines2(lines)
+			{
+				lines := make([]int, 0)
+				for _, tr := range trs {
+					lines = append(lines, tr.OpenIndex)
+				}
+				ch1.SetLines1(lines)
 
-			areas := make([]chart.Area, 0)
-			for _, tr := range trs {
-				areas = append(areas, chart.Area{Index1: tr.OpenIndex, Index2: tr.CloseIndex, Good: tr.Positive})
+				lines = make([]int, 0)
+				for _, tr := range trs {
+					lines = append(lines, tr.CloseIndex)
+				}
+				ch1.SetLines2(lines)
+
+				areas := make([]chart.Area, 0)
+				for _, tr := range trs {
+					areas = append(areas, chart.Area{Index1: tr.OpenIndex, Index2: tr.CloseIndex, Good: tr.Positive})
+				}
+				ch1.Areas = areas
 			}
-			ch1.Areas = areas
 		}
-
 		img1 := ch1.DrawTrace()
 
+		// CHART 2
 		ch2 := chart.NewChart()
-		ch2.SetData(s1)
-
 		{
-			lines := make([]int, 0)
-			for _, tr := range trs {
-				lines = append(lines, tr.OpenIndex)
-			}
-			ch2.SetLines1(lines)
+			ch2.SetText("RSI")
+			ch2.SetData(rsiData)
 
-			lines = make([]int, 0)
-			for _, tr := range trs {
-				lines = append(lines, tr.CloseIndex)
+			{
+				lines := make([]int, 0)
+				for _, tr := range trs {
+					lines = append(lines, tr.OpenIndex)
+				}
+				ch2.SetLines1(lines)
+
+				lines = make([]int, 0)
+				for _, tr := range trs {
+					lines = append(lines, tr.CloseIndex)
+				}
+				ch2.SetLines2(lines)
+
+				areas := make([]chart.Area, 0)
+				for _, tr := range trs {
+					areas = append(areas, chart.Area{Index1: tr.OpenIndex, Index2: tr.CloseIndex, Good: tr.Positive})
+				}
+				ch2.Areas = areas
 			}
-			ch2.SetLines2(lines)
+
 		}
-
 		img2 := ch2.DrawTrace()
 
+		// CHART 3
 		ch3 := chart.NewChart()
-		ch3.SetData(trends)
+		{
+			ch3.SetText("EMA")
+			ch3.SetData(emaSlowData)
+			ch3.SetData2(emaFastData)
+
+			{
+				lines := make([]int, 0)
+				for _, tr := range trs {
+					lines = append(lines, tr.OpenIndex)
+				}
+				ch3.SetLines1(lines)
+
+				lines = make([]int, 0)
+				for _, tr := range trs {
+					lines = append(lines, tr.CloseIndex)
+				}
+				ch3.SetLines2(lines)
+
+				areas := make([]chart.Area, 0)
+				for _, tr := range trs {
+					areas = append(areas, chart.Area{Index1: tr.OpenIndex, Index2: tr.CloseIndex, Good: tr.Positive})
+				}
+				ch3.Areas = areas
+			}
+		}
 		img3 := ch3.DrawTrace()
 
+		// CHART 4
 		ch4 := chart.NewChart()
 		{
-			data := make([]float64, len(prices))
-			r := len(prices) / 10
-			for i := 0; i < len(prices); i++ {
-				data[i] = prices[i]
-				if i > r {
-					for j := i - r; j < i; j++ {
-						data[i] += prices[j]
-					}
-					data[i] /= float64(r)
-				}
-			}
-
-			//savitzkyGolay5(data)
-
-			ch4.SetData(data)
 		}
 		img4 := ch4.DrawTrace()
 
@@ -398,27 +366,40 @@ func Emulate(short int, long int, stopLoss float64, takeProfit float64, p0 float
 		f, _ := os.Create("02_RESULT.png")
 		png.Encode(f, img)
 		f.Close()
-	}
+	}*/
 
-	return 0
+	return totalProfitInProcents
 }
 
 func main() {
-	Emulate(12, 26, -0.5, 2, 0)
-	/*for stopLoss := 0.5; stopLoss < 1.0; stopLoss += 0.1 {
-		logger.Println("stopLoss:", stopLoss)
-		for takeProfit := 0.2; takeProfit < 5.0; takeProfit += 0.1 {
-			logger.Println("takeProfit:", takeProfit)
-			for short := 1; short < 20; short++ {
-				for long := short + 3; long < 30; long++ {
-					profit := Emulate(short, long, -stopLoss, takeProfit, 0)
-					if profit > 0 {
-						logger.Println("-----------------------", "short:", short, "long:", long, "profit:", profit)
-					}
+	//prof := Emulate(12, 26, -0.2, 2, 0)
+	//fmt.Println("Profit:", prof)
+
+	result := ""
+
+	for short := 5; short < 20; short++ {
+		logger.Println("short:", short)
+		for long := short + 5; long < short+50; long++ {
+			logger.Println("long:", long)
+			for p0 := short; p0 < 110; p0++ {
+				line := ""
+				line += fmt.Sprint(short)
+				line += "\t"
+				line += fmt.Sprint(long)
+				line += "\t"
+				line += fmt.Sprint(p0)
+				line += "\r\n"
+				result += line
+				profit := Emulate(short, long, -0.5, 3, p0)
+				if profit > 0 {
+					logger.Println("-----------------------", "short:", short, "long:", long, "profit:", profit)
 				}
 			}
 		}
-	}*/
+	}
+
+	os.WriteFile("calc_result.txt", []byte(result), 0644)
+
 	//FetchInstruments()
 	//FetchData()
 }

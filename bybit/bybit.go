@@ -68,6 +68,11 @@ type Candle struct {
 	Turnover   string
 }
 
+func (c *Candle) ClosePriceFloat() float64 {
+	v, _ := strconv.ParseFloat(c.ClosePrice, 64)
+	return v
+}
+
 func GetCandles(symbol string, startDT time.Time, endDT time.Time, interval string) []Candle {
 	time.Sleep(100 * time.Millisecond)
 	start := fmt.Sprint(startDT.UnixMilli())

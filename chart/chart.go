@@ -11,6 +11,7 @@ import (
 type Chart struct {
 	text   string
 	data   []float64
+	data2  []float64
 	colors []color.Color
 
 	lines1 []int
@@ -38,6 +39,10 @@ func (c *Chart) SetData(data []float64) {
 	}
 }
 
+func (c *Chart) SetData2(data []float64) {
+	c.data2 = data
+}
+
 func (c *Chart) SetText(text string) {
 	c.text = text
 }
@@ -55,9 +60,22 @@ func (c *Chart) SetLines2(lines []int) {
 }
 
 func (c *Chart) DrawTrace() image.Image {
+	if len(c.data) == 0 {
+		return nil
+	}
+
 	minValue := c.data[0]
 	maxValue := c.data[0]
 	for _, v := range c.data {
+		if v < minValue {
+			minValue = v
+		}
+		if v > maxValue {
+			maxValue = v
+		}
+	}
+
+	for _, v := range c.data2 {
 		if v < minValue {
 			minValue = v
 		}
@@ -95,6 +113,20 @@ func (c *Chart) DrawTrace() image.Image {
 		} else {
 			dc.SetColor(c.colors[i])
 		}
+
+		if i == 0 {
+			dc.MoveTo(x, height-y)
+		} else {
+			dc.LineTo(x, height-y)
+		}
+	}
+	dc.Stroke()
+
+	for i := 0; i < len(c.data2); i++ {
+		x := float64(i) / float64(len(c.data2)) * float64(width)
+		y := (c.data2[i] - minValue) / (maxValue - minValue) * float64(height)
+
+		dc.SetRGB(0, 0.9, 0.5)
 
 		if i == 0 {
 			dc.MoveTo(x, height-y)
@@ -165,17 +197,21 @@ func CombineImages(images ...image.Image) image.Image {
 	width := 0
 	height := 0
 	for _, img := range images {
-		if img.Bounds().Dx() > width {
-			width = img.Bounds().Dx()
+		if img != nil {
+			if img.Bounds().Dx() > width {
+				width = img.Bounds().Dx()
+			}
+			height += img.Bounds().Dy()
 		}
-		height += img.Bounds().Dy()
 	}
 
 	dst := image.NewRGBA(image.Rect(0, 0, width, height))
 	y := 0
 	for _, img := range images {
-		draw.Draw(dst, img.Bounds().Add(image.Pt(0, y)), img, image.Point{0, 0}, draw.Src)
-		y += img.Bounds().Dy()
+		if img != nil {
+			draw.Draw(dst, img.Bounds().Add(image.Pt(0, y)), img, image.Point{0, 0}, draw.Src)
+			y += img.Bounds().Dy()
+		}
 	}
 
 	return dst
